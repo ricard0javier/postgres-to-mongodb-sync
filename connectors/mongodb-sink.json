@@ -1,0 +1,9 @@
+{
+  "connector.class": "com.mongodb.kafka.connect.MongoSinkConnector",
+  "tasks.max": "1",
+  "topics": "app.customer.documents",
+  "connection.uri": "mongodb://root:root@mongodb-atlas-local:27017/?authSource=admin",
+  "database": "app",
+  "collection": "customers",
+  "document.id.strategy": "com.mongodb.kafka.connect.sink.processor.id.strategy.ProvidedInValueStrategy"
+}

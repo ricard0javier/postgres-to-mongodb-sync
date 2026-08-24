@@ -1,0 +1,14 @@
+FROM quay.io/debezium/connect:3.6.1.Final
+
+USER root
+
+RUN microdnf install -y curl unzip \
+    && curl --fail --location --silent --show-error \
+      "https://github.com/mongodb/mongo-kafka/releases/download/r3.0.1/mongodb-kafka-connect-mongodb-3.0.1.zip" \
+      --output /tmp/mongodb-kafka-connect.zip \
+    && echo "67002637906ba36063e41aa0d4aeb44e09fa41c000575d46369a73cb4a6efad4  /tmp/mongodb-kafka-connect.zip" | sha256sum -c - \
+    && unzip -q /tmp/mongodb-kafka-connect.zip -d /kafka/connect \
+    && rm /tmp/mongodb-kafka-connect.zip \
+    && microdnf clean all
+
+USER kafka
