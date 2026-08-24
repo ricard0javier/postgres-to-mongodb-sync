@@ -85,7 +85,8 @@ class CustomerDocumentTopologyTest {
 
       assertTrue(documents.isEmpty());
       assertEquals(5, JSON.readTree(driver.<String, String>getKeyValueStore(
-          TransactionAssemblerProcessor.TRANSACTIONS_STORE).get("742")).path("seen").asInt());
+          TransactionAssemblerProcessor.TRANSACTIONS_STORE).get(
+          TransactionAssemblerProcessor.metaKey("742"))).path("seen").asInt());
       transactions.pipeInput("742", "{\"status\":\"END\",\"id\":\"742:999\",\"event_count\":5}");
 
       KeyValue<String, String> bundle = bundles.readKeyValue();

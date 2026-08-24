@@ -1,7 +1,6 @@
 package io.syncbench.aggregation;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.List;
 
 import org.apache.kafka.streams.processor.api.Processor;
 import org.apache.kafka.streams.processor.api.ProcessorContext;
@@ -19,9 +18,14 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
  *
  * <p>The input is keyed by normalized transaction ID, so one task sees the complete row count and
  * Debezium END marker even when the original CDC topics have many unrelated partitions.
+ *
+ * <p>Row events are staged per customer so large transactions (for example delete-all) never write a
+ * single multi-megabyte value to the state-store changelog.
  */
 final class TransactionAssemblerProcessor implements Processor<String, String, String, String> {
   static final String TRANSACTIONS_STORE = "transactions-by-id";
+  private static final String META_PREFIX = "meta:";
+  private static final String EVENTS_PREFIX = "events:";
   private static final ObjectMapper JSON = new ObjectMapper();
 
   private ProcessorContext<String, String> context;
@@ -52,15 +56,25 @@ final class TransactionAssemblerProcessor implements Processor<String, String, S
     }
     String transactionId = text(envelope.get("transactionId"));
     if (transactionId == null) {
-      emitBundles(null, java.util.List.of(envelope));
+      emitBundle(null, affectedCustomerIds(envelope), List.of(envelope));
       return;
     }
-    ObjectNode transaction = storedObject(transactions.get(transactionId));
-    ArrayNode events = arrayOrCreate(transaction, "events");
-    events.add(envelope);
-    transaction.put("seen", transaction.path("seen").asLong() + 1);
-    transactions.put(transactionId, serialize(transaction));
+    stageRow(transactionId, envelope);
     flushIfComplete(transactionId);
+  }
+
+  /** Appends one row event to each affected customer's staged bundle for the transaction. */
+  private void stageRow(String transactionId, JsonNode envelope) {
+    ObjectNode meta = storedObject(transactions.get(metaKey(transactionId)));
+    meta.put("seen", meta.path("seen").asLong() + 1);
+    ArrayNode customers = arrayOrCreate(meta, "customers");
+    for (String customerId : affectedCustomerIds(envelope)) {
+      addCustomer(customers, customerId);
+      ArrayNode events = storedArray(transactions.get(eventsKey(transactionId, customerId)));
+      events.add(envelope);
+      transactions.put(eventsKey(transactionId, customerId), serialize(events));
+    }
+    transactions.put(metaKey(transactionId), serialize(meta));
   }
 
   /** Records the expected row count supplied by a Debezium END marker. */
@@ -68,39 +82,45 @@ final class TransactionAssemblerProcessor implements Processor<String, String, S
     if (transactionId == null || !"END".equals(event.path("status").asText())) {
       return;
     }
-    ObjectNode transaction = storedObject(transactions.get(transactionId));
-    transaction.put("expected", event.path("event_count").asLong(-1));
-    transactions.put(transactionId, serialize(transaction));
+    ObjectNode meta = storedObject(transactions.get(metaKey(transactionId)));
+    meta.put("expected", event.path("event_count").asLong(-1));
+    transactions.put(metaKey(transactionId), serialize(meta));
     flushIfComplete(transactionId);
   }
 
   /** Emits only when the number of staged row events exactly matches Debezium's END event count. */
   private void flushIfComplete(String transactionId) {
-    ObjectNode transaction = storedObject(transactions.get(transactionId));
-    long expected = transaction.path("expected").asLong(-1);
-    if (expected < 0 || transaction.path("seen").asLong() != expected) {
+    ObjectNode meta = storedObject(transactions.get(metaKey(transactionId)));
+    long expected = meta.path("expected").asLong(-1);
+    if (expected < 0 || meta.path("seen").asLong() != expected) {
       return;
     }
-    ArrayNode events = arrayOrCreate(transaction, "events");
-    emitBundles(transactionId, events);
-    transactions.delete(transactionId);
+    ArrayNode customers = arrayOrCreate(meta, "customers");
+    for (JsonNode customerNode : customers) {
+      String customerId = customerNode.asText();
+      ArrayNode events = storedArray(transactions.get(eventsKey(transactionId, customerId)));
+      emitBundle(transactionId, customerId, events);
+      transactions.delete(eventsKey(transactionId, customerId));
+    }
+    transactions.delete(metaKey(transactionId));
   }
 
-  /** Groups raw row events by every customer affected by the row, including reassigned children. */
-  private void emitBundles(String transactionId, Iterable<JsonNode> events) {
-    Map<String, ArrayNode> byCustomer = new LinkedHashMap<>();
-    for (JsonNode envelope : events) {
-      for (String customerId : affectedCustomerIds(envelope)) {
-        byCustomer.computeIfAbsent(customerId, ignored -> JSON.createArrayNode()).add(envelope);
-      }
+  /** Forwards one customer bundle assembled from staged row events. */
+  private void emitBundle(String transactionId, String customerId, ArrayNode events) {
+    ObjectNode bundle = JSON.createObjectNode();
+    if (transactionId != null) {
+      bundle.put("transactionId", transactionId);
     }
-    for (Map.Entry<String, ArrayNode> entry : byCustomer.entrySet()) {
-      ObjectNode bundle = JSON.createObjectNode();
-      if (transactionId != null) {
-        bundle.put("transactionId", transactionId);
-      }
-      bundle.set("events", entry.getValue());
-      context.forward(new Record<>(entry.getKey(), serialize(bundle), context.currentSystemTimeMs()));
+    bundle.set("events", events);
+    context.forward(new Record<>(customerId, serialize(bundle), context.currentSystemTimeMs()));
+  }
+
+  /** Forwards the same envelope to every customer affected by a non-transactional row event. */
+  private void emitBundle(String transactionId, java.util.Set<String> customerIds, List<JsonNode> envelopes) {
+    ArrayNode events = JSON.createArrayNode();
+    envelopes.forEach(events::add);
+    for (String customerId : customerIds) {
+      emitBundle(transactionId, customerId, events);
     }
   }
 
@@ -132,6 +152,16 @@ final class TransactionAssemblerProcessor implements Processor<String, String, S
     }
   }
 
+  /** Tracks a customer ID once inside transaction metadata. */
+  private static void addCustomer(ArrayNode customers, String customerId) {
+    for (JsonNode existing : customers) {
+      if (customerId.equals(existing.asText())) {
+        return;
+      }
+    }
+    customers.add(customerId);
+  }
+
   /** Returns an array field, creating it when absent or malformed. */
   private static ArrayNode arrayOrCreate(ObjectNode parent, String field) {
     JsonNode value = parent.get(field);
@@ -155,6 +185,16 @@ final class TransactionAssemblerProcessor implements Processor<String, String, S
     return parsedKey.hasNonNull(field) ? parsedKey.get(field).asText() : null;
   }
 
+  /** Returns the metadata key used for one PostgreSQL transaction. */
+  static String metaKey(String transactionId) {
+    return META_PREFIX + transactionId;
+  }
+
+  /** Returns the staging key used for one customer within a transaction. */
+  static String eventsKey(String transactionId, String customerId) {
+    return EVENTS_PREFIX + transactionId + ":" + customerId;
+  }
+
   /** Returns an object JSON node, or {@code null} for other values. */
   private static ObjectNode object(JsonNode value) {
     return value != null && value.isObject() ? (ObjectNode) value : null;
@@ -173,6 +213,12 @@ final class TransactionAssemblerProcessor implements Processor<String, String, S
   private static ObjectNode storedObject(String json) {
     JsonNode value = json == null ? null : object(parse(json));
     return value == null ? JSON.createObjectNode() : (ObjectNode) value;
+  }
+
+  /** Deserializes stored JSON into an array, returning an empty array when unavailable. */
+  private static ArrayNode storedArray(String json) {
+    JsonNode value = json == null ? null : parse(json);
+    return value instanceof ArrayNode array ? array : JSON.createArrayNode();
   }
 
   /** Parses a JSON value from a topology record or state store. */
