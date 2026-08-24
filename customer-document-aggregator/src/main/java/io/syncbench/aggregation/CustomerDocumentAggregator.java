@@ -37,6 +37,11 @@ public final class CustomerDocumentAggregator {
     properties.put(StreamsConfig.REPLICATION_FACTOR_CONFIG, 1);
     properties.put(StreamsConfig.NUM_STANDBY_REPLICAS_CONFIG, 0);
 
+    int maxMessageBytes = positiveInteger("KAFKA_MAX_MESSAGE_BYTES", 67_108_864);
+    properties.put(StreamsConfig.producerPrefix("max.request.size"), maxMessageBytes);
+    properties.put(StreamsConfig.consumerPrefix("max.partition.fetch.bytes"), maxMessageBytes);
+    properties.put(StreamsConfig.consumerPrefix("fetch.max.bytes"), maxMessageBytes * 2);
+
     CountDownLatch shutdownLatch = new CountDownLatch(1);
     KafkaStreams streams = new KafkaStreams(CustomerDocumentTopology.build(), properties);
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
