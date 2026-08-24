@@ -30,6 +30,8 @@ for topic in \
   create_delete_retained_topic "$topic" 1
 done
 
-for topic in app.customer.transaction.events app.customer.transaction.bundles; do
+for topic in app.customer.transaction.events app.customer.transaction.bundles app.customer.documents; do
   create_delete_retained_topic "$topic" "$partitions"
 done
+
+create_delete_retained_topic app.customer.documents.dlq 1

@@ -140,7 +140,7 @@ services:
       kafka:
         condition: service_healthy
     environment:
-      AGGREGATION_TOPIC_PARTITIONS: ${AGGREGATION_TOPIC_PARTITIONS:-3}
+      AGGREGATION_TOPIC_PARTITIONS: ${AGGREGATION_TOPIC_PARTITIONS:-12}
     volumes:
       - ./connectors:/connectors:ro
     entrypoint: ["/bin/sh", "/connectors/create-topics.sh"]

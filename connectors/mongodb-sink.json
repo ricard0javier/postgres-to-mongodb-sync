@@ -1,9 +1,16 @@
 {
   "connector.class": "com.mongodb.kafka.connect.MongoSinkConnector",
-  "tasks.max": "1",
+  "tasks.max": "12",
   "topics": "app.customer.documents",
-  "connection.uri": "mongodb://root:root@mongodb-atlas-local:27017/?authSource=admin",
+  "connection.uri": "mongodb://root:root@mongodb-atlas-local:27017/?authSource=admin&retryWrites=true&w=majority",
   "database": "app",
   "collection": "customers",
-  "document.id.strategy": "com.mongodb.kafka.connect.sink.processor.id.strategy.ProvidedInValueStrategy"
+  "document.id.strategy": "com.mongodb.kafka.connect.sink.processor.id.strategy.ProvidedInValueStrategy",
+  "writemodel.strategy": "com.mongodb.kafka.connect.sink.writemodel.strategy.ReplaceOneDefaultStrategy",
+  "max.batch.size": "1000",
+  "bulk.write.ordered": "true",
+  "mongo.errors.tolerance": "data",
+  "errors.deadletterqueue.topic.name": "app.customer.documents.dlq",
+  "errors.deadletterqueue.context.headers.enable": "true",
+  "errors.deadletterqueue.topic.replication.factor": "1"
 }
